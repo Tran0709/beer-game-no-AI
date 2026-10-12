@@ -1,0 +1,74 @@
+{
+  "project_name": "The Beer Game (standard build)",
+  "git": {
+    "dev_branch": "dev",
+    "test_branch": "test",
+    "live_branch": "main",
+    "push": false,
+    "remote": "origin"
+  },
+  "environments": {
+    "dev": {
+      "url": "",
+      "deploy_cmd": "",
+      "smoke_cmd": "node scripts/rebuild.js --check"
+    },
+    "test": {
+      "url": "twin/site/index.html",
+      "deploy_cmd": "node scripts/make_twin.js",
+      "smoke_cmd": "node scripts/twin_selfcheck.js",
+      "note": "TEST is the digital twin: node scripts/run_twin.js starts a private replica (live bundle + the real relay on localhost)."
+    },
+    "live": {
+      "url": "https://snowy-voice-53c8.tranphucdang0709.workers.dev/",
+      "deploy_cmd": "echo Cloudflare deploys main automatically when it is pushed to GitHub",
+      "smoke_cmd": "",
+      "note": "Cloudflare Workers Builds deploys on every push to main. Set git.push to true and /approve becomes the live release button. Then run: node scripts/smoke_url.js <live url>"
+    }
+  },
+  "commands": {
+    "install": "",
+    "test": "node tests/run_all.js",
+    "post_patch": "node scripts/rebuild.js"
+  },
+  "maintenance_tasks": [
+    {
+      "name": "rebuild-bundle",
+      "cmd": "node scripts/rebuild.js",
+      "note": "keeps index.html in sync with source/"
+    },
+    {
+      "name": "health-report",
+      "cmd": "node tests/run_all.js",
+      "note": "read-only full health check"
+    }
+  ],
+  "approval": {
+    "live": "telegram"
+  },
+  "guardrails": {
+    "max_changed_files": 12,
+    "max_diff_lines": 400,
+    "max_fix_attempts": 2,
+    "protected_paths": [
+      ".env",
+      "secrets/",
+      "ai-maintenance/",
+      ".github/",
+      "tests/",
+      "relay-server/.env",
+      "selenium-tests/"
+    ]
+  },
+  "llm": {
+    "provider": "openai",
+    "api_key_env": "OPENAI_API_KEY",
+    "model_env": "AGENT_MODEL",
+    "default_model": "gpt-4o-mini"
+  },
+  "telegram": {
+    "token_env": "TELEGRAM_BOT_TOKEN",
+    "allowed_chat_ids_env": "TELEGRAM_ALLOWED_CHAT_IDS"
+  },
+  "desktop_notifications": true
+}

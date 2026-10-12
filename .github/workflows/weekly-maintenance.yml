@@ -1,0 +1,22 @@
+name: Weekly AI self-maintenance (Beer Game)
+on:
+  schedule:
+    - cron: "0 18 * * 0"      # Sunday 18:00 UTC = Monday 02:00 Singapore
+  workflow_dispatch: {}
+jobs:
+  maintain:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0, token: "${{ secrets.PORTAL_BOT_PAT }}" }
+      - uses: actions/setup-node@v4
+        with: { node-version: "20" }
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: |
+          git config user.name "portal-ai-agent"; git config user.email "agent@users.noreply.github.com"
+          git checkout dev && git checkout test && git checkout main && git checkout dev
+          python ai-maintenance/agent/maintain.py weekly
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          

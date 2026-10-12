@@ -1,0 +1,8 @@
+{
+  "name": "beer-game-relay-server",
+  "version": "1.0.0",
+  "description": "Minimal WebSocket relay for The Beer Game (LA4) multiplayer rooms.",
+  "main": "server.js",
+  "scripts": { "start": "node server.js" },
+  "dependencies": { "ws": "^8.18.0" }
+}

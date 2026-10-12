@@ -1,0 +1,20 @@
+# Cloudflare: everything listed here is NOT published on the website. Only index.html (and files not listed) are public.
+.git
+.github
+.wrangler
+.env*
+.gitignore
+.assetsignore
+wrangler.jsonc
+ai-maintenance
+relay-server
+selenium-tests
+analysis
+scripts
+source
+tests
+twin
+node_modules
+*.md
+*.py
+*.bat
