@@ -12,7 +12,7 @@ SYSTEM = ("You are doing the weekly proactive review of The Beer Game, a browser
           "NEVER change game rules, scoring, costs or engine behaviour, tests, config, or secrets. "
           "Reply with at most {n} proposals, each in exactly this format:\n"
           "=== PROPOSAL ===\nTITLE: <short title>\nWHY: <one or two sentences: the concrete problem and the benefit>\n"
-          "PATCH:\n<a unified diff (git apply format, paths relative to the repo root) of at most {lines} changed lines, touching ONLY files shown below>\n=== END ===\n"
+          "PATCH:\n<the change, of at most {lines} changed lines, touching ONLY files shown below. " + EDIT_FORMAT_HELP + ">\n=== END ===\n"
           "If an idea is bigger than that, or concerns a file you were not shown, write PATCH: NONE and explain the idea in WHY so a human can decide.")
 
 def candidates(pcfg):
@@ -79,14 +79,11 @@ def review(report):
         t = it["title"]
         if it["patch"] is None:
             suggestions.append("%s: %s" % (t, it["why"])); continue
-        paths = patch_paths(it["patch"])
-        changed = sum(1 for l in it["patch"].splitlines() if l[:1] in "+-" and l[:3] not in ("+++", "---"))
-        if not paths or any(is_protected(p, g) or p not in allowed_files for p in paths) or changed > pcfg["max_lines_per_proposal"]:
-            suggestions.append("%s: %s (not auto-applied: outside the files or size the AI may change on its own)" % (t, it["why"])); continue
-        pf = os.path.join(STATE, "proposal.diff"); os.makedirs(STATE, exist_ok=True)
-        with open(pf, "w", encoding="utf-8", newline="\n") as f: f.write(it["patch"].replace("\r\n", "\n") + "\n")
-        if subprocess.run(["git", "apply", "--ignore-whitespace", pf], cwd=REPO, capture_output=True).returncode != 0:
-            suggestions.append("%s: %s (patch did not apply; idea kept for a human)" % (t, it["why"])); continue
+        status, detail, paths, lines = apply_change(it["patch"], g, allow=allowed_files, max_lines=pcfg["max_lines_per_proposal"])
+        if status != "ok":
+            why_not = {"no_apply": "the change did not apply (%s); idea kept for a human" % detail,
+                       "empty": "no usable change was given; idea kept for a human"}.get(status, "not auto-applied: outside the files or size the AI may change on its own")
+            suggestions.append("%s: %s (%s)" % (t, it["why"], why_not)); continue
         run(c["commands"].get("post_patch", ""))
         rc, _ = run(c["commands"]["test"])
         if rc != 0:

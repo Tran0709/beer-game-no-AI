@@ -1,5 +1,5 @@
 """Shared helpers. Python standard library only."""
-import json, os, subprocess, sys, datetime, urllib.request, urllib.parse, tempfile
+import json, os, re, subprocess, sys, datetime, urllib.request, urllib.parse, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 FW = os.path.dirname(HERE)                                   # ai-maintenance/
@@ -63,12 +63,14 @@ def desktop_toast(title, body):
     except Exception as e:
         print("[notify] desktop notification failed:", e)
 
-def notify(text, desktop=True, title="Beer Game maintenance"):
+def notify(text, desktop=True, title="Beer Game maintenance", toast=None):
     """Message every allowed Telegram chat AND (if desktop=True) pop a desktop notification. Never raises."""
     print("[notify] " + text)
     c = cfg()
     if desktop and c.get("desktop_notifications", True):
-        body = " ".join(l.strip() for l in text.splitlines() if l.strip() and not l.startswith("#"))
+        lines = [l.strip() for l in text.splitlines() if l.strip() and not l.startswith("#")]
+        lead = [l for l in lines if l.startswith(("RESULT", "ERROR", "Problem"))]
+        body = toast or " ".join(lead or lines)
         desktop_toast(title, body)
     c = c["telegram"]
     token, ids = os.environ.get(c["token_env"]), os.environ.get(c["allowed_chat_ids_env"], "")
@@ -127,3 +129,90 @@ def write_report(name, lines):
     p = os.path.join(REPORTS, "%s-%s.md" % (now(), name))
     open(p, "w", encoding="utf-8").write("\n".join(lines) + "\n")
     return p
+
+
+# ---------- turning an AI reply into a change ----------
+# Preferred format (robust, no line numbers to get wrong):
+#   EDIT: path/to/file
+#   <<<<<<< FIND
+#   exact existing text (must appear exactly once)
+#   =======
+#   replacement text
+#   >>>>>>> REPLACE
+# A classic unified diff is still accepted.
+EDIT_RE = re.compile(r"EDIT:[ \t]*(\S+)[ \t]*\r?\n<<<<<<< FIND\r?\n(.*?)\r?\n=======\r?\n(.*?)\r?\n?>>>>>>> REPLACE", re.S)
+EDIT_FORMAT_HELP = ("Describe each change as one or more blocks, exactly:\nEDIT: <path relative to repo root>\n<<<<<<< FIND\n<existing text, copied EXACTLY from the file shown; it must appear once>\n"
+                    "=======\n<replacement text>\n>>>>>>> REPLACE\nKeep FIND short but unique (a few lines). Do not invent new files.")
+
+def clean_reply(text):
+    return "\n".join(l for l in (text or "").strip().splitlines() if not l.startswith("```")).strip()
+
+def apply_change(text, g, allow=None, max_lines=400):
+    """Apply an AI-proposed change to the working tree.
+    Returns (status, detail, paths, changed_lines); status is ok | empty | protected | not_allowed | too_big | no_apply."""
+    text = clean_reply(text)
+    edits = EDIT_RE.findall(text)
+    if edits:
+        tracked = set(git("ls-files").splitlines()); new = {}; lines = 0
+        for path, find, rep in edits:
+            path = path.strip("`'\"")
+            if path.startswith("/") or ".." in path.replace("\\", "/").split("/") or path not in tracked:
+                return "no_apply", "unknown file " + path, [path], 0
+            if is_protected(path, g): return "protected", path, [path], 0
+            if allow is not None and path not in allow: return "not_allowed", path, [path], 0
+            if path not in new:
+                raw = open(os.path.join(REPO, path), encoding="utf-8", newline="").read()
+                new[path] = [raw.replace("\r\n", "\n"), "\r\n" in raw]
+            f_n, r_n = find.replace("\r\n", "\n"), rep.replace("\r\n", "\n")
+            if not f_n.strip() or new[path][0].count(f_n) != 1:
+                return "no_apply", "the text to replace was not found exactly once in " + path, [path], 0
+            new[path][0] = new[path][0].replace(f_n, r_n, 1)
+            lines += max(f_n.count("\n") + 1, (r_n.count("\n") + 1) if r_n else 0)
+        paths = sorted(new)
+        if len(paths) > g["max_changed_files"] or lines > max_lines: return "too_big", "%d files, %d lines" % (len(paths), lines), paths, lines
+        for path, (content, crlf) in new.items():
+            with open(os.path.join(REPO, path), "w", encoding="utf-8", newline="") as f:
+                f.write(content.replace("\n", "\r\n") if crlf else content)
+        return "ok", "", paths, lines
+    if "+++ " not in text:
+        return "empty", "no change proposed", [], 0
+    paths = patch_paths(text)
+    lines = sum(1 for l in text.splitlines() if l[:1] in "+-" and l[:3] not in ("+++", "---"))
+    for pth in paths:
+        if is_protected(pth, g): return "protected", pth, paths, lines
+        if allow is not None and pth not in allow: return "not_allowed", pth, paths, lines
+    if not paths or len(paths) > g["max_changed_files"] or lines > max_lines: return "too_big", "%d files, %d lines" % (len(paths), lines), paths, lines
+    os.makedirs(STATE, exist_ok=True); pf = os.path.join(STATE, "change.diff")
+    with open(pf, "w", encoding="utf-8", newline="\n") as f: f.write(text.replace("\r\n", "\n") + "\n")
+    if subprocess.run(["git", "apply", "--ignore-whitespace", pf], cwd=REPO, capture_output=True).returncode != 0:
+        return "no_apply", "the patch did not apply", paths, lines
+    return "ok", "", paths, lines
+
+STOP = set("the and for that with this have from they when what were been will into your page does not but are can its has was all any".split())
+
+def file_context(text, ask=None, limit=30000):
+    """Show the AI the code it needs: files named in `text` (e.g. a failing test's output), or, if none is named,
+    the files it picks, as windows around lines that match the problem's keywords."""
+    tracked = git("ls-files").splitlines()
+    named = [f for f in tracked if f in text or os.path.basename(f) in text]
+    if not named and ask:
+        reply = ask("Which of these files would you need to read to deal with the problem below? Reply with up to 3 paths, one per line, nothing else.\n\nProblem:\n" + text[:2000] + "\n\nFiles:\n" + "\n".join(tracked))
+        picked = set(re.findall(r"[\w./-]+", reply or ""))
+        named = [f for f in tracked if f in picked][:3]
+    words = [w for w in set(re.findall(r"[a-z]{5,}", text.lower())) if w not in STOP]
+    parts, used = [], 0
+    for f in named:
+        try: lines = open(os.path.join(REPO, f), encoding="utf-8", newline="").read().replace("\r\n", "\n").split("\n")
+        except (OSError, UnicodeDecodeError): continue
+        focus = [int(n) for n in re.findall(re.escape(os.path.basename(f)) + r":(\d+)", text)]
+        if not focus and sum(len(l) + 1 for l in lines) > limit // 2:
+            scored = sorted(range(len(lines)), key=lambda i: -sum(w in lines[i].lower() for w in words))
+            focus = [i + 1 for i in scored[:4] if any(w in lines[i].lower() for w in words)]
+        if focus:
+            keep = sorted({j for n in focus for j in range(max(0, n - 30), min(len(lines), n + 30))})
+            body = "\n".join(lines[j] for j in keep)
+        else:
+            body = "\n".join(lines)
+        body = body[: max(0, limit - used)]
+        used += len(body); parts.append("##### %s (excerpt)\n%s" % (f, body))
+    return "\n\n".join(parts)

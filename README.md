@@ -149,6 +149,11 @@ By default multiplayer works between browser tabs on the same machine. For
 players joining from their own devices with just a room code, the relay
 server needs to be running somewhere reachable:
 
+To try the relay on your own computer first (needs Node.js): open a terminal in
+`relay-server/`, run `npm install` once (it downloads the one dependency, `ws`),
+then `npm start`. It listens on port 8787, so the local address is `ws://localhost:8787`.
+(`start-twin.bat` does all of this for you and also serves a private copy of the game.)
+
 1. Deploy `relay-server/` to any Node host (Render, Railway, Fly.io all
    have a free tier). Entry point `server.js`, started with `npm start`.
    If the platform builds from a repository root, set the service's

@@ -49,6 +49,22 @@ class Heal(unittest.TestCase):
         sh("git checkout -q main", self.d); self.assertEqual(sh("node tests/run_all.js", self.d).returncode, 0, "live must be green")
         sh("git checkout -q dev", self.d)
         self.agent("pipeline.py", "rollback"); self.assertEqual(self.head("main"), live0)
+    def test_edit_format_heals_the_engine(self):
+        reply = self.aux + "/edit.txt"
+        wr(reply, "EDIT: source/engine.js\n<<<<<<< FIND\nconst value = Math.round(base + noise) * undefined;\n=======\nconst value = Math.max(0, Math.round(base + noise));\n>>>>>>> REPLACE\n")
+        r = self.agent("maintain.py", "weekly", fake=reply); self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("tests now pass", r.stdout)
+        self.assertIn("Math.max(0, Math.round(base + noise))", sh("git show test:source/engine.js", self.d).stdout)
+        self.assertIn("ready, waiting for your approval", open(self.aux + "/toasts.log", encoding="utf-8").read(), "the notification must lead with the outcome")
+    def test_edit_that_does_not_match_is_rejected_cleanly(self):
+        reply = self.aux + "/edit2.txt"
+        wr(reply, "EDIT: source/engine.js\n<<<<<<< FIND\nthis text is not in the file\n=======\nx\n>>>>>>> REPLACE\n")
+        r = self.agent("maintain.py", "weekly", fake=reply); self.assertNotEqual(r.returncode, 0)
+        self.assertIn("not found exactly once", r.stdout); self.assertEqual(self.head("dev"), self.head("main"))
+    def test_edit_cannot_touch_protected_files(self):
+        reply = self.aux + "/edit3.txt"
+        wr(reply, "EDIT: tests/run_all.js\n<<<<<<< FIND\nlet pass = 0, fail = 0;\n=======\nlet pass = 0, fail = 0; process.exit(0);\n>>>>>>> REPLACE\n")
+        r = self.agent("maintain.py", "weekly", fake=reply); self.assertIn("REJECTED by guardrails", r.stdout); self.assertEqual(self.head("dev"), self.head("main"))
     def test_ai_may_not_edit_the_tests_or_secrets(self):
         for target in ("tests/run_all.js", "ai-proxy-server/.env"):
             p = self.aux + "/bad.diff"; wr(p, "--- a/%s\n+++ b/%s\n@@ -1,1 +1,1 @@\n-x\n+y\n" % (target, target))
@@ -90,7 +106,8 @@ class Review(unittest.TestCase):
         return subprocess.run([sys.executable, FW + "/agent/maintain.py", "weekly"], cwd=self.d, env=self.env, capture_output=True, text=True, encoding="utf-8", errors="replace")
     def head(self, b): return sh("git rev-parse " + b, self.d).stdout.strip()
     def test_ai_applies_safe_ideas_and_only_suggests_the_rest(self):
-        good = self.diff_of("README.md", "\nReviewed weekly by the maintenance agent.\n")
+        head = next(l for l in open(PKG + "/README.md", encoding="utf-8").read().splitlines() if l.startswith("## "))
+        good = "EDIT: README.md\n<<<<<<< FIND\n%s\n=======\n%s (reviewed weekly)\n>>>>>>> REPLACE" % (head, head)
         bad = self.diff_of("scripts/rebuild.js", "\nTHIS IS NOT VALID JAVASCRIPT (\n")
         rules = self.diff_of("source/engine.js", "\n// tweak\n")
         blk = lambda t, w, p: "=== PROPOSAL ===\nTITLE: %s\nWHY: %s\nPATCH:\n%s\n=== END ===\n" % (t, w, p)
@@ -100,7 +117,7 @@ class Review(unittest.TestCase):
         self.assertEqual(r.returncode, 0, out + r.stderr)
         self.assertEqual(out.count("Proposal APPLIED"), 1); self.assertEqual(out.count("Suggestion for a human"), 3)
         self.assertIn("tests failed, so it was undone", out); self.assertIn("not auto-applied", out); self.assertIn("Split ui.js", out)
-        self.assertIn("Reviewed weekly", sh("git show test:README.md", self.d).stdout, "the safe idea must reach the test environment")
+        self.assertIn("(reviewed weekly)", sh("git show test:README.md", self.d).stdout, "the safe idea must reach the test environment")
         self.assertNotIn("NOT VALID", sh("git show test:scripts/rebuild.js", self.d).stdout)
         self.assertEqual(sh("git diff dev test -- source/", self.d).stdout, "", "game source must be untouched")
         self.assertEqual(self.head("main"), live0, "live must not move before approval")
