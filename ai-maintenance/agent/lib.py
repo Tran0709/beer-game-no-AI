@@ -8,6 +8,8 @@ STATE = os.environ.get("AGENT_STATE_DIR") or os.path.join(FW, "state")
 REPORTS = os.environ.get("AGENT_REPORTS_DIR") or os.path.join(FW, "reports")
 
 def load_env():
+    if os.environ.get("AGENT_ENV_OFF"):      # tests: never read the real .env
+        return
     # ai-maintenance/.env first, then the game's own ai-proxy-server/.env (so one OpenAI key serves both)
     for p in (os.path.join(FW, ".env"), os.path.join(REPO, "ai-proxy-server", ".env")):
         if os.path.exists(p):

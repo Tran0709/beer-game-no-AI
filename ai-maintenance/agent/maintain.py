@@ -6,7 +6,7 @@ Flow: branch off dev -> run upkeep tasks -> run tests -> if red, ask the AI for 
 import sys, os, argparse, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from lib import *
-import pipeline
+import pipeline, review
 
 SYSTEM = ("You are a careful maintenance engineer for The Beer Game, a single-file browser simulation (sources in source/*.js and base-style.css; index.html is generated, never edit it). Reply with ONLY a unified diff "
           "(git apply format, paths relative to repo root) that makes the smallest change to fix the problem. "
@@ -45,8 +45,23 @@ def try_patch(problem, out, g, report):
 
 def main():
     load_env(); ap = argparse.ArgumentParser()
-    ap.add_argument("mode", choices=["weekly", "feedback"]); ap.add_argument("--text", default="")
+    ap.add_argument("mode", choices=["weekly", "feedback", "test-notify", "test-ai"]); ap.add_argument("--text", default="")
     ap.add_argument("--dry-run", action="store_true"); a = ap.parse_args()
+    if a.mode == "test-ai":
+        import urllib.error
+        try:
+            reply = ask_llm("Reply with exactly the word: OK", "You are a connectivity check.")
+        except urllib.error.HTTPError as e:
+            print("AI check FAILED: OpenAI answered HTTP %d. %s" % (e.code, {401: "The key was rejected (wrong, revoked or mistyped).", 429: "Rate limit or no credit on the account.", 404: "Model name not available; check AGENT_MODEL."}.get(e.code, ""))); return 1
+        except Exception as e:
+            print("AI check FAILED: could not reach OpenAI (%s). Check your internet connection." % type(e).__name__); return 1
+        if reply is None:
+            print("AI check FAILED: no key found. Put OPENAI_API_KEY in ai-maintenance/.env (not .env.example)."); return 1
+        print("AI check OK: the key works and the model answered. The agent can now write fixes."); return 0
+    if a.mode == "test-notify":
+        notify("This is a test. If you can read this, desktop notifications work.\nThe agent will show one like it when it changes or needs something.", title="Beer Game maintenance (test)")
+        print("Test notification sent. Look at the bottom-right of your screen / Notification centre (and Telegram, if set up).")
+        return 0
     c = cfg(); g = c["guardrails"]; gb = c["git"]
     ready = subprocess.run(["git", "rev-parse", "--verify", "-q", gb["dev_branch"]], cwd=REPO, capture_output=True).returncode == 0 \
         and subprocess.run(["git", "rev-parse", "--verify", "-q", gb["test_branch"]], cwd=REPO, capture_output=True).returncode == 0
@@ -83,15 +98,22 @@ def main():
                 report.append("RESULT: could not get to green. Nothing was promoted. Human attention needed.")
                 git("checkout", "--", "."); git("checkout", gb["dev_branch"]); git("branch", "-D", work)
                 p = write_report(a.mode, report); notify("\n".join(report)); return 1
-        if not dirty():
+        suggestions = []
+        if a.mode == "weekly":
+            if dirty():                                     # keep upkeep changes separate from AI proposals
+                git("add", "-A", "--", ".", ":!ai-maintenance"); git("commit", "-q", "-m", "AI weekly: upkeep")
+            applied, suggestions = review.review(report)
+        ahead = int(git("rev-list", "--count", "%s..%s" % (gb["dev_branch"], work)) or 0)
+        if not dirty() and ahead == 0:
             report.append("RESULT: nothing to change; portal is healthy."); git("checkout", gb["dev_branch"]); git("branch", "-D", work)
-            write_report(a.mode, report); notify("\n".join(report), desktop=False); return 0
-        nfiles = len(dirty().splitlines())
+            write_report(a.mode, report); notify("\n".join(report), desktop=bool(suggestions)); return 0
+        nfiles = len(set(git("diff", "--name-only", gb["dev_branch"]).splitlines()) | {l[3:] for l in dirty().splitlines()})
         if nfiles > g["max_changed_files"]:
             report.append("RESULT: %d files changed, above the limit of %d. Stopped." % (nfiles, g["max_changed_files"]))
             git("checkout", "--", "."); git("clean", "-fd", "--", ".", ":!ai-maintenance"); git("checkout", gb["dev_branch"]); git("branch", "-D", work)
             write_report(a.mode, report); notify("\n".join(report)); return 1
-        git("add", "-A", "--", ".", ":!ai-maintenance"); git("commit", "-m", "AI %s: %s" % (a.mode, (a.text or "upkeep")[:60]))
+        if dirty():
+            git("add", "-A", "--", ".", ":!ai-maintenance"); git("commit", "-m", "AI %s: %s" % (a.mode, (a.text or "upkeep")[:60]))
         ok, lines = pipeline.promote(work, dry=a.dry_run)
         report += lines + ["RESULT: " + ("promoted" if ok else "FAILED, rolled back")]
         write_report(a.mode, report); notify("\n".join(report)); return 0 if ok else 1

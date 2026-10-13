@@ -24,8 +24,18 @@ Sources and the relay server parse · `index.html` matches `source/` · key scre
 ## The digital twin
 `start-twin.bat` (or `node scripts/run_twin.js`) starts a private replica at http://localhost:8080: the exact live game, wired to the real relay server running on your own machine. Open it in several tabs to play a full multiplayer game with no risk to real players. Every time a change reaches the TEST stage, `scripts/twin_selfcheck.js` boots the twin and confirms the page is served and the relay accepts connections.
 
+## Proactive review (the AI thinks of changes)
+Every weekly run, after the health check, the AI reviews the project and looks for things worth improving (fragile code, missing error handling, wrong docs, risky settings). It is told not to invent work: if nothing is worth changing it says so and stays quiet.
+- **Small, safe ideas** in the files it may touch on its own (`proactive.allowed_prefixes` in `config/config.json`) are applied on a work branch and kept only if every test still passes. They then go dev → test (twin) → your approval, like any other change.
+- **Bigger ideas**, or anything in the game rules, UI, tests or config, are never changed automatically. They are written to the weekly report and shown in your notification as "Suggestion for a human".
+- Limits: at most 2 proposals and 30 changed lines each per week. Turn it off with `"proactive": {"enabled": false}`.
+- What is sent to OpenAI: the text of the allowed small files, the file list, and recent reports/feedback. Never `.env` or other secrets.
+
+## Check the AI connection
+`python ai-maintenance/agent/maintain.py test-ai` sends one tiny request to OpenAI and says whether your key works (it never prints the key).
+
 ## Desktop notifications
-Whenever the agent changes something, promotes a fix, needs your approval, goes live, rolls back, or can't fix a problem, it pops a notification on the desktop of the machine it runs on (Windows, macOS, Linux), and also messages Telegram if that's set up. A healthy week with nothing to change stays silent on the desktop. Turn it off with `"desktop_notifications": false` in `config/config.json`.
+Whenever the agent changes something, promotes a fix, needs your approval, goes live, rolls back, or can't fix a problem, it pops a notification on the desktop of the machine it runs on (Windows, macOS, Linux), and also messages Telegram if that's set up. A healthy week with nothing to change stays silent on the desktop. Check it works any time with `python ai-maintenance/agent/maintain.py test-notify`. Turn it off with `"desktop_notifications": false` in `config/config.json`.
 A desktop pop-up only appears if the agent runs on YOUR computer. The GitHub Action runs in the cloud, so it can only reach you via Telegram. To get desktop pop-ups, run `install-weekly-task.bat` (Windows) once: it schedules the agent on your own PC every Monday 10:00 (the PC must be on).
 
 ## Guardrails
