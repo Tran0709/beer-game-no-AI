@@ -6,47 +6,72 @@ Flow: branch off dev -> run upkeep tasks -> run tests -> if red, ask the AI for 
 import sys, os, argparse, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from lib import *
-import pipeline
+import pipeline, review
 
-SYSTEM = ("You are a careful maintenance engineer for The Beer Game, a single-file browser simulation (sources in source/*.js and base-style.css; index.html is generated, never edit it). Reply with ONLY a unified diff "
-          "(git apply format, paths relative to repo root) that makes the smallest change to fix the problem. "
-          "Never touch secrets, .env, CI files or ai-maintenance/. If you cannot fix it safely, reply with exactly: NO_SAFE_FIX")
+SYSTEM = ("You are a careful maintenance engineer for The Beer Game, a single-file browser simulation (sources in source/*.js and base-style.css; index.html is generated, never edit it). "
+          "Make the smallest change that fixes the problem, using ONLY text you can see in the excerpts provided. " + EDIT_FORMAT_HELP + " "
+          "Never touch secrets, .env, CI files, tests or ai-maintenance/. If you cannot fix it safely, reply with exactly: NO_SAFE_FIX")
 
 def dirty():
     """Uncommitted changes, ignoring the agent's own folder (reports, state)."""
     return git("status", "--porcelain", "--", ".", ":!ai-maintenance")
 
+def toast_for(applied, suggestions, ok, lines, fixed):
+    """A short, useful desktop notification: lead with what happened, not the routine task lines."""
+    if not ok: return "A change FAILED its checks and was rolled back. Details: ai-maintenance/reports."
+    parts = []
+    n = len(applied) + (1 if fixed else 0)
+    if any("waiting for your approval" in l for l in lines): parts.append("%d change(s) ready, waiting for your approval (/approve)" % max(n, 1))
+    elif any(l.startswith("LIVE:") and "tests: PASS" in l for l in lines): parts.append("Changes are live")
+    if fixed: parts.append("Fixed a failing check")
+    if applied: parts.append("Applied: " + "; ".join(x.split(":")[0] for x in applied))
+    if not parts: parts.append("No changes made")
+    if suggestions: parts.append("%d suggestion(s) for you: %s" % (len(suggestions), "; ".join(x.split(":")[0] for x in suggestions)))
+    return " | ".join(parts)
+
 def try_patch(problem, out, g, report):
-    files = git("ls-files")[:6000]
+    ask = lambda q: ask_llm(q, "Answer exactly as instructed.")
     for attempt in range(1, g["max_fix_attempts"] + 1):
-        reply = ask_llm("Problem:\n%s\n\nOutput:\n%s\n\nRepo files:\n%s" % (problem, out[-3000:], files), SYSTEM)
+        try:
+            ctx = file_context(problem + "\n" + out[-3000:], ask)
+            reply = ask_llm("Problem:\n%s\n\nOutput:\n%s\n\nCode you may change:\n%s" % (problem, out[-3000:], ctx or "(no file excerpt available)"), SYSTEM)
+        except Exception as e:
+            report.append("AI patch skipped: the AI request failed (%s)." % type(e).__name__); return False
         if reply is None:
             report.append("AI patch skipped: no API key configured."); return False
-        patch = reply.strip()
-        if patch.startswith("```"):
-            patch = "\n".join(l for l in patch.splitlines() if not l.startswith("```"))
-        if "NO_SAFE_FIX" in patch or "+++ " not in patch:
+        if "NO_SAFE_FIX" in reply:
             report.append("AI attempt %d: no safe fix proposed." % attempt); continue
-        paths = patch_paths(patch)
-        bad = [p for p in paths if is_protected(p, g)]
-        changed_lines = sum(1 for l in patch.splitlines() if l[:1] in "+-" and l[:3] not in ("+++", "---"))
-        if bad or len(paths) > g["max_changed_files"] or changed_lines > g["max_diff_lines"]:
-            report.append("AI attempt %d REJECTED by guardrails (%s)." % (attempt, "protected: %s" % bad if bad else "too large")); continue
-        pf = os.path.join(STATE, "patch.diff"); os.makedirs(STATE, exist_ok=True)
-        open(pf, "w", encoding="utf-8", newline="\n").write(patch.replace("\r\n", "\n") + "\n")
-        if subprocess.run(["git", "apply", "--ignore-whitespace", pf], cwd=REPO, capture_output=True).returncode != 0:
-            report.append("AI attempt %d: patch did not apply." % attempt); continue
+        status, detail, paths, lines = apply_change(reply, g, max_lines=g["max_diff_lines"])
+        if status in ("protected", "too_big", "not_allowed"):
+            report.append("AI attempt %d REJECTED by guardrails (%s: %s)." % (attempt, status, detail)); continue
+        if status != "ok":
+            report.append("AI attempt %d: %s." % (attempt, detail)); continue
         run(cfg()["commands"].get("post_patch", ""))        # e.g. rebuild index.html from source/
         rc, o = run(cfg()["commands"]["test"])
         if rc == 0:
-            report.append("AI attempt %d: patch applied (%d files, %d lines); tests now pass." % (attempt, len(paths), changed_lines)); return True
-        git("checkout", "--", "."); report.append("AI attempt %d: patch applied but tests still failing; reverted." % attempt); out = o
+            report.append("AI attempt %d: change applied (%d files, %d lines); tests now pass." % (attempt, len(paths), lines)); return True
+        git("checkout", "--", "."); report.append("AI attempt %d: change applied but tests still failing; reverted." % attempt); out = o
     return False
 
 def main():
     load_env(); ap = argparse.ArgumentParser()
-    ap.add_argument("mode", choices=["weekly", "feedback"]); ap.add_argument("--text", default="")
+    ap.add_argument("mode", choices=["weekly", "feedback", "test-notify", "test-ai"]); ap.add_argument("--text", default="")
     ap.add_argument("--dry-run", action="store_true"); a = ap.parse_args()
+    if a.mode == "test-ai":
+        import urllib.error
+        try:
+            reply = ask_llm("Reply with exactly the word: OK", "You are a connectivity check.")
+        except urllib.error.HTTPError as e:
+            print("AI check FAILED: OpenAI answered HTTP %d. %s" % (e.code, {401: "The key was rejected (wrong, revoked or mistyped).", 429: "Rate limit or no credit on the account.", 404: "Model name not available; check AGENT_MODEL."}.get(e.code, ""))); return 1
+        except Exception as e:
+            print("AI check FAILED: could not reach OpenAI (%s). Check your internet connection." % type(e).__name__); return 1
+        if reply is None:
+            print("AI check FAILED: no key found. Put OPENAI_API_KEY in ai-maintenance/.env (not .env.example)."); return 1
+        print("AI check OK: the key works and the model answered. The agent can now write fixes."); return 0
+    if a.mode == "test-notify":
+        notify("This is a test. If you can read this, desktop notifications work.\nThe agent will show one like it when it changes or needs something.", title="Beer Game maintenance (test)")
+        print("Test notification sent. Look at the bottom-right of your screen / Notification centre (and Telegram, if set up).")
+        return 0
     c = cfg(); g = c["guardrails"]; gb = c["git"]
     ready = subprocess.run(["git", "rev-parse", "--verify", "-q", gb["dev_branch"]], cwd=REPO, capture_output=True).returncode == 0 \
         and subprocess.run(["git", "rev-parse", "--verify", "-q", gb["test_branch"]], cwd=REPO, capture_output=True).returncode == 0
@@ -83,18 +108,25 @@ def main():
                 report.append("RESULT: could not get to green. Nothing was promoted. Human attention needed.")
                 git("checkout", "--", "."); git("checkout", gb["dev_branch"]); git("branch", "-D", work)
                 p = write_report(a.mode, report); notify("\n".join(report)); return 1
-        if not dirty():
+        suggestions, applied = [], []
+        if a.mode == "weekly":
+            if dirty():                                     # keep upkeep changes separate from AI proposals
+                git("add", "-A", "--", ".", ":!ai-maintenance"); git("commit", "-q", "-m", "AI weekly: upkeep")
+            applied, suggestions = review.review(report)
+        ahead = int(git("rev-list", "--count", "%s..%s" % (gb["dev_branch"], work)) or 0)
+        if not dirty() and ahead == 0:
             report.append("RESULT: nothing to change; portal is healthy."); git("checkout", gb["dev_branch"]); git("branch", "-D", work)
-            write_report(a.mode, report); notify("\n".join(report), desktop=False); return 0
-        nfiles = len(dirty().splitlines())
+            write_report(a.mode, report); notify("\n".join(report), desktop=bool(suggestions), toast=toast_for([], suggestions, True, [], False)); return 0
+        nfiles = len(set(git("diff", "--name-only", gb["dev_branch"]).splitlines()) | {l[3:] for l in dirty().splitlines()})
         if nfiles > g["max_changed_files"]:
             report.append("RESULT: %d files changed, above the limit of %d. Stopped." % (nfiles, g["max_changed_files"]))
             git("checkout", "--", "."); git("clean", "-fd", "--", ".", ":!ai-maintenance"); git("checkout", gb["dev_branch"]); git("branch", "-D", work)
             write_report(a.mode, report); notify("\n".join(report)); return 1
-        git("add", "-A", "--", ".", ":!ai-maintenance"); git("commit", "-m", "AI %s: %s" % (a.mode, (a.text or "upkeep")[:60]))
+        if dirty():
+            git("add", "-A", "--", ".", ":!ai-maintenance"); git("commit", "-m", "AI %s: %s" % (a.mode, (a.text or "upkeep")[:60]))
         ok, lines = pipeline.promote(work, dry=a.dry_run)
         report += lines + ["RESULT: " + ("promoted" if ok else "FAILED, rolled back")]
-        write_report(a.mode, report); notify("\n".join(report)); return 0 if ok else 1
+        write_report(a.mode, report); notify("\n".join(report), toast=toast_for(applied, suggestions, ok, lines, fixed_by_ai)); return 0 if ok else 1
     except Exception as e:
         report.append("ERROR: %s" % e); write_report(a.mode, report); notify("\n".join(report)); return 2
     finally:

@@ -70,5 +70,18 @@
     "token_env": "TELEGRAM_BOT_TOKEN",
     "allowed_chat_ids_env": "TELEGRAM_ALLOWED_CHAT_IDS"
   },
-  "desktop_notifications": true
+  "desktop_notifications": true,
+  "proactive": {
+    "enabled": true,
+    "max_proposals": 2,
+    "max_lines_per_proposal": 30,
+    "max_file_bytes": 25000,
+    "max_context_chars": 60000,
+    "allowed_prefixes": [
+      "relay-server/",
+      "scripts/",
+      "README.md"
+    ],
+    "note": "The AI may change only these files on its own. Everything else it can only suggest. Game rules (engine), UI, tests and config are never auto-changed."
+  }
 }

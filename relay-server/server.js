@@ -11,7 +11,13 @@ wss.on('connection', (ws, req) => {
   rooms.get(room).add(ws);
   ws.on('message', (data) => {
     for (const client of rooms.get(room)) {
-      if (client.readyState === 1) client.send(data.toString('utf8'));
+      if (client.readyState === 1) {
+        try {
+          client.send(data.toString('utf8'));
+        } catch (error) {
+          console.error('Error sending message to client:', error);
+        }
+      }
     }
   });
   ws.on('close', () => {

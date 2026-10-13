@@ -16,11 +16,13 @@ t('bundle has the key screens and a build tag', () => {
   const h = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
   ['orderInput', 'BUILD_TAG', 'Current Role status', 'HOW_TO_PLAY_VIDEO_BASE64'].forEach(s => eq(h.includes(s), 'missing: ' + s));
 });
+// A local .env is normal and git-ignored. It is a problem only if git would publish it.
+const tracked = f => spawnSync('git', ['ls-files', '--error-unmatch', f], { cwd: root }).status === 0;
 t('no secrets in the project', () => {
   const bad = []; (function walk(d) { fs.readdirSync(d, { withFileTypes: true }).forEach(e => {
     const p = path.join(d, e.name); if (['node_modules', '.git', 'twin'].includes(e.name)) return;
     if (e.isDirectory()) return walk(p);
-    if (e.name === '.env') bad.push(p + ' (.env must not ship)');
+    if (e.name === '.env' && tracked(p)) bad.push(p + ' (.env is tracked by git; it must stay private)');
     if (/\.(js|html|json|md|py|bat|yml|example)$/.test(e.name) && /sk-[A-Za-z0-9_-]{20,}/.test(fs.readFileSync(p, 'utf8'))) bad.push(p);
   }); })(root);
   eq(!bad.length, bad.join(', '));
