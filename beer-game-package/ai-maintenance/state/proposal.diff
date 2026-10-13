@@ -1,9 +1,0 @@
---- README.md
-+++ README.md
-@@ -56,6 +56,9 @@
-1. Deploy `relay-server/` to any Node host (Render, Railway, Fly.io all have a free tier). Entry point `server.js`, started with `npm start`.
-2. Put the resulting `wss://` URL into `DEFAULT_SERVER_URL` in `source/multiplayer.js`, then rebuild `index.html` (see below) - or use the in-game "Advanced: change the server address" field on the Host/Join screens to point a specific room at a different relay without rebuilding at all.
-
-+**Dependencies:** Ensure you have the `ws` package installed in the `relay-server` directory by running `npm install` before starting the server.
-+
-**Free-tier note:** these hosts sleep an idle service and take 30-60 seconds to wake. The game sends a wake-up request before connecting and retries for about a minute, showing "Waking up the game server..." rather than failing outright.
