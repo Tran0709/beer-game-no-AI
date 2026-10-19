@@ -4,7 +4,7 @@
     "dev_branch": "dev",
     "test_branch": "test",
     "live_branch": "main",
-    "push": false,
+    "push": true,
     "remote": "origin"
   },
   "environments": {
