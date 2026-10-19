@@ -80,6 +80,8 @@ def review(report):
         if it["patch"] is None:
             suggestions.append("%s: %s" % (t, it["why"])); continue
         status, detail, paths, lines = apply_change(it["patch"], g, allow=allowed_files, max_lines=pcfg["max_lines_per_proposal"])
+        if status == "already_done":
+            report.append("Skipped (already in place): " + t); continue
         if status != "ok":
             why_not = {"no_apply": "the change did not apply (%s); idea kept for a human" % detail,
                        "empty": "no usable change was given; idea kept for a human"}.get(status, "not auto-applied: outside the files or size the AI may change on its own")

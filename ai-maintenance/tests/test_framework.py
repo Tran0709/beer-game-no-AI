@@ -21,7 +21,7 @@ class Heal(unittest.TestCase):
         sh("node scripts/rebuild.js && git commit -qam bug && git branch dev && git branch test", d)
         self.patch = self.aux + "/fix.diff"
         wr(self.patch, sh("git diff HEAD~1 HEAD -R -- source/engine.js", d).stdout)
-        self.cfgfile = self.aux + "/cfg.json"; wr(self.cfgfile, open(FW + "/config/config.json", encoding="utf-8").read())
+        self.cfgfile = self.aux + "/cfg.json"; wr(self.cfgfile, json.dumps(dict(json.load(open(FW + "/config/config.json", encoding="utf-8")), git=dict(json.load(open(FW + "/config/config.json", encoding="utf-8"))["git"], push=False))))
         self.env = dict(os.environ, PORTAL_REPO=d, AGENT_CONFIG=self.cfgfile, AGENT_STATE_DIR=self.aux + "/state", AGENT_REPORTS_DIR=self.aux + "/reports", AGENT_DESKTOP_LOG=self.aux + "/toasts.log", AGENT_ENV_OFF="1")
         for k in ("TELEGRAM_BOT_TOKEN", "OPENAI_API_KEY"): self.env.pop(k, None)
     def tearDown(self): shutil.rmtree(self.d, ignore_errors=True); shutil.rmtree(self.aux, ignore_errors=True)
@@ -93,7 +93,7 @@ class Review(unittest.TestCase):
         self.d = tempfile.mkdtemp(); self.aux = tempfile.mkdtemp(); d = self.d
         shutil.copytree(PKG, d, dirs_exist_ok=True, ignore=shutil.ignore_patterns(".git", "twin", "state", "reports", "__pycache__", "node_modules", ".env"))
         sh("git init -q -b main && git config core.autocrlf false && git config user.email a@b.c && git config user.name t && git add -A && git commit -qm good && git branch dev && git branch test", d)
-        c = json.load(open(FW + "/config/config.json", encoding="utf-8")); c["proactive"]["max_proposals"] = 4
+        c = json.load(open(FW + "/config/config.json", encoding="utf-8")); c["proactive"]["max_proposals"] = 4; c["git"]["push"] = False
         wr(self.aux + "/cfg.json", json.dumps(c))
         self.env = dict(os.environ, PORTAL_REPO=d, AGENT_CONFIG=self.aux + "/cfg.json", AGENT_STATE_DIR=self.aux + "/s", AGENT_REPORTS_DIR=self.aux + "/r",
                         AGENT_DESKTOP_LOG=self.aux + "/t.log", AGENT_ENV_OFF="1", AGENT_FAKE_LLM=self.aux + "/reply.txt")
@@ -127,6 +127,13 @@ class Review(unittest.TestCase):
         wr(self.aux + "/reply.txt", "NO_PROPOSALS")
         r = self.weekly(); self.assertEqual(r.returncode, 0, r.stdout + r.stderr); self.assertIn("healthy", r.stdout); self.assertIn("nothing worth changing", r.stdout)
         self.assertFalse(os.path.exists(self.aux + "/t.log"), "no pop-up when nothing happened")
+    def test_an_idea_that_is_already_done_is_dropped_quietly(self):
+        head = next(l for l in open(PKG + "/README.md", encoding="utf-8").read().splitlines() if l.startswith("## "))
+        done = "EDIT: README.md\n<<<<<<< FIND\n## An old heading that is no longer there\n=======\n%s\n>>>>>>> REPLACE" % head
+        wr(self.aux + "/reply.txt", "=== PROPOSAL ===\nTITLE: Add the heading\nWHY: Missing.\nPATCH:\n%s\n=== END ===\n" % done)
+        r = self.weekly(); self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("already in place", r.stdout); self.assertNotIn("Suggestion for a human", r.stdout)
+        self.assertFalse(os.path.exists(self.aux + "/t.log"), "no pop-up for an idea that is already done")
     def test_only_ideas_still_notifies_you(self):
         wr(self.aux + "/reply.txt", "=== PROPOSAL ===\nTITLE: Add rate limiting\nWHY: The relay accepts unlimited rooms per IP.\nPATCH:\nNONE\n=== END ===\n")
         r = self.weekly(); self.assertEqual(r.returncode, 0, r.stdout + r.stderr); self.assertIn("rate limiting", r.stdout)
