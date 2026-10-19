@@ -44,7 +44,7 @@ def promote(work_branch, dry=False):
     push(test)
     git("checkout", dev)
     if c["approval"]["live"] == "telegram":
-        lines.append("LIVE: waiting for your approval. Reply /approve in Telegram (or run: python agent/pipeline.py go-live).")
+        lines.append("LIVE: waiting for your approval. To release it, run: python ai-maintenance\\agent\\pipeline.py go-live")
         return True, lines
     ok, more = go_live(dry); return ok, lines + more
 
