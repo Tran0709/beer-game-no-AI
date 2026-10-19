@@ -127,6 +127,13 @@ class Review(unittest.TestCase):
         wr(self.aux + "/reply.txt", "NO_PROPOSALS")
         r = self.weekly(); self.assertEqual(r.returncode, 0, r.stdout + r.stderr); self.assertIn("healthy", r.stdout); self.assertIn("nothing worth changing", r.stdout)
         self.assertFalse(os.path.exists(self.aux + "/t.log"), "no pop-up when nothing happened")
+    def test_an_idea_that_is_already_done_is_dropped_quietly(self):
+        head = next(l for l in open(PKG + "/README.md", encoding="utf-8").read().splitlines() if l.startswith("## "))
+        done = "EDIT: README.md\n<<<<<<< FIND\n## An old heading that is no longer there\n=======\n%s\n>>>>>>> REPLACE" % head
+        wr(self.aux + "/reply.txt", "=== PROPOSAL ===\nTITLE: Add the heading\nWHY: Missing.\nPATCH:\n%s\n=== END ===\n" % done)
+        r = self.weekly(); self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("already in place", r.stdout); self.assertNotIn("Suggestion for a human", r.stdout)
+        self.assertFalse(os.path.exists(self.aux + "/t.log"), "no pop-up for an idea that is already done")
     def test_only_ideas_still_notifies_you(self):
         wr(self.aux + "/reply.txt", "=== PROPOSAL ===\nTITLE: Add rate limiting\nWHY: The relay accepts unlimited rooms per IP.\nPATCH:\nNONE\n=== END ===\n")
         r = self.weekly(); self.assertEqual(r.returncode, 0, r.stdout + r.stderr); self.assertIn("rate limiting", r.stdout)

@@ -149,11 +149,11 @@ def clean_reply(text):
 
 def apply_change(text, g, allow=None, max_lines=400):
     """Apply an AI-proposed change to the working tree.
-    Returns (status, detail, paths, changed_lines); status is ok | empty | protected | not_allowed | too_big | no_apply."""
+    Returns (status, detail, paths, changed_lines); status is ok | already_done | empty | protected | not_allowed | too_big | no_apply."""
     text = clean_reply(text)
     edits = EDIT_RE.findall(text)
     if edits:
-        tracked = set(git("ls-files").splitlines()); new = {}; lines = 0
+        tracked = set(git("ls-files").splitlines()); new = {}; lines = 0; skipped = 0
         for path, find, rep in edits:
             path = path.strip("`'\"")
             if path.startswith("/") or ".." in path.replace("\\", "/").split("/") or path not in tracked:
@@ -164,10 +164,15 @@ def apply_change(text, g, allow=None, max_lines=400):
                 raw = open(os.path.join(REPO, path), encoding="utf-8", newline="").read()
                 new[path] = [raw.replace("\r\n", "\n"), "\r\n" in raw]
             f_n, r_n = find.replace("\r\n", "\n"), rep.replace("\r\n", "\n")
-            if not f_n.strip() or new[path][0].count(f_n) != 1:
+            n_found = new[path][0].count(f_n) if f_n.strip() else 0
+            if n_found == 0 and len(r_n.strip()) >= 20 and r_n in new[path][0]:   # long enough to be a real match, not a stray "x"
+                skipped += 1; continue          # the change is already in the file
+            if n_found != 1:
                 return "no_apply", "the text to replace was not found exactly once in " + path, [path], 0
             new[path][0] = new[path][0].replace(f_n, r_n, 1)
             lines += max(f_n.count("\n") + 1, (r_n.count("\n") + 1) if r_n else 0)
+        if skipped == len(edits):
+            return "already_done", "that change is already in place", [], 0
         paths = sorted(new)
         if len(paths) > g["max_changed_files"] or lines > max_lines: return "too_big", "%d files, %d lines" % (len(paths), lines), paths, lines
         for path, (content, crlf) in new.items():
