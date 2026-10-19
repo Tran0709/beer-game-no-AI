@@ -50,7 +50,10 @@ def try_patch(problem, out, g, report):
         rc, o = run(cfg()["commands"]["test"])
         if rc == 0:
             report.append("AI attempt %d: change applied (%d files, %d lines); tests now pass." % (attempt, len(paths), lines)); return True
-        git("checkout", "--", "."); report.append("AI attempt %d: change applied but tests still failing; reverted." % attempt); out = o
+        fails = [l.strip() for l in o.splitlines() if "FAIL" in l] or [l.strip() for l in o.splitlines() if l.strip()][-4:]
+        git("checkout", "--", "."); report.append("AI attempt %d: change applied but tests still failing; reverted." % attempt)
+        report.append("  what the AI proposed: " + " / ".join(l.strip() for l in clean_reply(reply).splitlines() if l.strip())[:400])
+        report.append("  what the tests said: " + " | ".join(fails)[:400]); out = o
     return False
 
 def main():
