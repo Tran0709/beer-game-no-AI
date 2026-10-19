@@ -143,7 +143,8 @@ The Retailer in this run is scripted, so it cannot respond to incentives: the ma
 shift lowers that Retailer's bill but cannot show the behaviour change it is meant to
 cause. Real players may react differently.
 
-## Want multiplayer across different devices?
+## Want multiplayer across different devices?  
+To use the relay server, ensure you install the required dependencies by running `npm install` in the `relay-server/` directory, which includes the `ws` package.
 
 By default multiplayer works between browser tabs on the same machine. For
 players joining from their own devices with just a room code, the relay
