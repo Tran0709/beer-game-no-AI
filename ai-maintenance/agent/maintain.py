@@ -43,7 +43,8 @@ def try_patch(problem, out, g, report):
             report.append("AI attempt %d: no safe fix proposed." % attempt); continue
         status, detail, paths, lines = apply_change(reply, g, max_lines=g["max_diff_lines"])
         if status in ("protected", "too_big", "not_allowed"):
-            report.append("AI attempt %d REJECTED by guardrails (%s: %s)." % (attempt, status, detail)); continue
+            report.append("AI attempt %d REJECTED by guardrails (%s: %s)." % (attempt, status, detail))
+            out += "\nNOTE: your previous change was rejected (%s: %s). index.html is generated: fix the code in source/ instead." % (status, detail); continue
         if status != "ok":
             report.append("AI attempt %d: %s." % (attempt, detail)); continue
         run(cfg()["commands"].get("post_patch", ""))        # e.g. rebuild index.html from source/

@@ -6,7 +6,10 @@ function t(name, fn) { try { fn(); pass++; console.log('  PASS', name); } catch 
 const eq = (c, m) => { if (!c) throw new Error(m); };
 
 t('every source file parses', () => {
-  ['engine.js', 'market.js', 'multiplayer.js', 'ui.js'].forEach(f => new vm.Script(fs.readFileSync(path.join(root, 'source', f), 'utf8'), { filename: f }));
+  ['engine.js', 'market.js', 'multiplayer.js', 'ui.js'].forEach(f => {
+    try { new vm.Script(fs.readFileSync(path.join(root, 'source', f), 'utf8'), { filename: f }); }
+    catch (e) { const m = /^\S+:(\d+)/m.exec(e.stack || ''); throw new Error('source/' + f + (m ? ':' + m[1] : '') + ' ' + e.message); }
+  });
   const r = spawnSync(process.execPath, ['--check', path.join(root, 'relay-server', 'server.js')]); eq(r.status === 0, 'relay-server/server.js: ' + r.stderr);
 });
 t('index.html is in sync with source/', () => {

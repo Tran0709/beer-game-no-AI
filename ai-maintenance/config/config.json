@@ -55,6 +55,8 @@
       "secrets/",
       "ai-maintenance/",
       ".github/",
+      "index.html",
+      "twin/",
       "tests/",
       "relay-server/.env",
       "selenium-tests/"
