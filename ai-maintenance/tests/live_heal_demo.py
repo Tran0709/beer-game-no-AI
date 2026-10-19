@@ -31,7 +31,7 @@ def main():
         sh("git init -q -b main && git config core.autocrlf false && git config user.email demo@example.com && git config user.name demo"
            " && git add -A && git commit -qm broken && git branch dev && git branch test", d)
         # 3. run the real weekly flow on the copy (no pushing, no live release)
-        c = json.load(open(os.path.join(FW, "config", "config.json"), encoding="utf-8")); c["git"]["push"] = False
+        c = json.load(open(os.path.join(FW, "config", "config.json"), encoding="utf-8")); c["git"]["push"] = False; c["proactive"]["enabled"] = False   # this demo is only about repair
         cfg = os.path.join(aux, "cfg.json"); open(cfg, "w", encoding="utf-8").write(json.dumps(c))
         env = dict(os.environ, PORTAL_REPO=d, AGENT_CONFIG=cfg, AGENT_STATE_DIR=os.path.join(aux, "s"), AGENT_REPORTS_DIR=os.path.join(aux, "r"))
         print("Asking the AI to repair it (this uses your OpenAI key and takes a minute)...\n")
@@ -39,7 +39,7 @@ def main():
                            capture_output=True, text=True, encoding="utf-8", errors="replace")
         print(r.stdout + r.stderr)
         # 4. verdict
-        fixed = "brokenOnPurpose" not in sh("git show test:source/engine.js", d).stdout
+        fixed = "const brokenOnPurpose = ;" not in sh("git show test:source/engine.js", d).stdout   # the broken line is gone from the test environment
         print("-" * 60)
         if fixed:
             print("RESULT: PASS - the AI fixed the broken code and it reached the test environment.")
