@@ -1695,7 +1695,7 @@ const SHOW_FACILITATOR_LIVE_SCREEN = false;
 const SHOW_STARTING_PRICE = false;
 const SHOW_FORCE_ADVANCE = false;
 // Shown in the Settings menu and the console. If the menu has no "Build" line at all, an older copy of the game is being served.
-const BUILD_TAG = '2026-10-06-short-guide';
+const BUILD_TAG = '2026-11-11-facilitator-orders';
 const SHOW_DECISION_TIMER = true;
 const ROLE_ICON = { retailer: '🏪', wholesaler: '🏬', distributor: '🚚', manufacturer: '🏭', facilitator: '🧑\u200d🍺' };
 const ROLE_BAR_COLOR = { retailer: '#E0A94A', wholesaler: '#6c9ab0', distributor: '#86a86a', manufacturer: '#c6604f' };
@@ -2623,6 +2623,31 @@ function computeSubmittedOrdersAsHost() {
   });
   return out;
 }
+// The Facilitator's seat grid shows every chain role's order at once: the number
+// that role is typing right now, then what it actually placed once it submits
+// (with any news or ceiling applied). A draft comes off the network, so it is
+// turned into a plain number before it goes into the page.
+function facilitatorOrderCellHtml(teamIndex, role, g) {
+  const hist = g.roles[role].history;
+  const lastWeek = hist.length ? hist[hist.length - 1].orderPlaced : null;
+  if (state.mode === 'solo') return lastWeek != null ? `Last week ordered <b>${lastWeek}</b>` : '<span class="hint">no orders yet</span>';
+  const entry = teamIndex === 0 ? getSubmittedOrderFor(role) : null;
+  if (entry) return describeSubmittedOrder(entry, lastWeek);
+  const draft = state.liveDrafts[teamIndex + ':' + role];
+  if (draft != null && String(draft).trim() !== '' && Number.isFinite(Number(draft))) {
+    const n = Math.max(0, Math.round(Number(draft)));
+    return `Typing <b>${n}</b> <span class="hint">(not sent yet${lastWeek != null ? ' · last week ' + lastWeek : ''})</span>`;
+  }
+  return describeSubmittedOrder(null, lastWeek);
+}
+// Updates one cell in place when a draft arrives, instead of redrawing the whole
+// screen, so a keystroke elsewhere never wipes what the Facilitator is typing.
+function refreshFacilitatorOrderCell(teamIndex, role) {
+  if (state.screen !== 'play' || state.localRole !== 'facilitator' || !state.teams) return;
+  const el = document.querySelector(`.follow-cell-order[data-order-team="${teamIndex}"][data-order-role="${role}"]`);
+  const g = state.teams[teamIndex];
+  if (el && g) el.innerHTML = facilitatorOrderCellHtml(teamIndex, role, g);
+}
 function getSubmittedOrderFor(role) { return (state.submittedOrders && state.submittedOrders[role]) || null; }
 function describeSubmittedOrder(entry, lastWeek) {
   // Not placed yet this week: say so, and keep last week's order on show, so the
@@ -3212,8 +3237,10 @@ function hostRoom(playerName, serverUrl, cfg) {
     // already delivered these to everyone, so the host only needs to
     // record them locally.
     } else if (msg.type === 'draft_update') {
+      if (isStaleDraft(msg)) return;
       state.liveDrafts[msg.teamIndex + ':' + msg.role] = msg.value;
       if (isCurrentlyFollowed(msg.teamIndex, msg.role)) render();
+      else refreshFacilitatorOrderCell(msg.teamIndex, msg.role);
     } else if (msg.type === 'cursor_update') {
       state.liveCursors[msg.teamIndex + ':' + msg.role] = { xPct: msg.xPct, yPct: msg.yPct };
       if (isCurrentlyFollowed(msg.teamIndex, msg.role) && !updateLiveCursorDotOnly(msg.teamIndex, msg.role)) render();
@@ -3273,14 +3300,24 @@ function moderatorKickSeat(teamIndex, role) {
   }
 }
 
-let _draftBroadcastTimer = null;
+let _draftBroadcastTimer = null, _draftLatest = '';
 function broadcastDraftThrottled(value) {
   if (!state.transport || state.localTeamIndex == null || !state.localRole) return;
+  _draftLatest = value; // keep the newest keystroke; the timer below sends whatever is latest when it fires
   if (_draftBroadcastTimer) return; // already scheduled, coalesce rapid keystrokes
   _draftBroadcastTimer = setTimeout(() => {
     _draftBroadcastTimer = null;
-    state.transport.send({ type: 'draft_update', teamIndex: state.localTeamIndex, role: state.localRole, value });
+    state.transport.send({ type: 'draft_update', teamIndex: state.localTeamIndex, role: state.localRole, value: _draftLatest, week: currentSessionWeek() });
   }, 300);
+}
+// Called on submit: a draft still waiting on the timer would otherwise land after
+// the order (and after the week resolves), showing a stale "typing" number.
+function cancelPendingDraft() {
+  if (_draftBroadcastTimer) { clearTimeout(_draftBroadcastTimer); _draftBroadcastTimer = null; }
+}
+// A draft from an earlier week (delayed on the network) is ignored.
+function isStaleDraft(msg) {
+  return msg.week != null && !!state.teams && msg.week !== currentSessionWeek();
 }
 
 // Lets the Facilitator see roughly where a role's cursor is and what they
@@ -3683,8 +3720,9 @@ function emitBotActivity(kind, teamIndex, role, payload) {
     if (isCurrentlyFollowed(teamIndex, role) && !updateLiveCursorDotOnly(teamIndex, role)) render();
   } else if (kind === 'draft') {
     state.liveDrafts[key] = payload.value;
-    state.transport.send({ type: 'draft_update', teamIndex, role, value: payload.value });
+    state.transport.send({ type: 'draft_update', teamIndex, role, value: payload.value, week: currentSessionWeek() });
     if (isCurrentlyFollowed(teamIndex, role)) render();
+    else refreshFacilitatorOrderCell(teamIndex, role);
   } else if (kind === 'click') {
     state.lastClicks[key] = { label: payload.label, ts: Date.now() };
     state.transport.send({ type: 'click_event', teamIndex, role, label: payload.label, ts: Date.now() });
@@ -3875,8 +3913,10 @@ function joinRoom(playerName, roomCode, serverUrl) {
       state.facilitatorDone = !!msg.done;
       render();
     } else if (msg.type === 'draft_update') {
+      if (isStaleDraft(msg)) return;
       state.liveDrafts[msg.teamIndex + ':' + msg.role] = msg.value;
       if (isCurrentlyFollowed(msg.teamIndex, msg.role)) render();
+      else refreshFacilitatorOrderCell(msg.teamIndex, msg.role);
     } else if (msg.type === 'cursor_update') {
       state.liveCursors[msg.teamIndex + ':' + msg.role] = { xPct: msg.xPct, yPct: msg.yPct };
       if (isCurrentlyFollowed(msg.teamIndex, msg.role) && !updateLiveCursorDotOnly(msg.teamIndex, msg.role)) render();
@@ -4558,7 +4598,7 @@ function renderFacilitatorPanel(game, view) {
     </div>
     <div class="card">
       <h3>Current Role status</h3>
-      <p class="hint">Click any seat below to see that role's situation: their stock, backlog, cost, and week-by-week history.${SHOW_FACILITATOR_LIVE_SCREEN ? ` In multiplayer you'll also see a live view of their screen and what they're typing.` : ''} View only, you can never edit or submit for them.</p>
+      <p class="hint">Each seat shows that role's order this week: the number they are typing, then what they actually ordered once they submit (news and ceilings included). Click any seat to see that role's situation: their stock, backlog, cost, and week-by-week history.${SHOW_FACILITATOR_LIVE_SCREEN ? ` In multiplayer you'll also see a live view of their screen and what they're typing.` : ''} View only, you can never edit or submit for them.</p>
       <div class="team-grid-wrap">
         <table class="team-grid follow-table">
           <thead><tr>${CHAIN.map(r => `<th>${ROLE_ICON[r]} ${ROLE_LABELS[r]}</th>`).join('')}</tr></thead>
@@ -4571,7 +4611,7 @@ function renderFacilitatorPanel(game, view) {
                   return `<td><button class="seat-cell followable-row ${isFollowing ? 'following' : ''}" data-follow-team="${ti}" data-follow-role="${r}">
                     <span class="follow-cell-name">${isFollowing ? '👁 ' : ''}${a.name}${a.isBot ? ' <span class="badge-tiny">AI</span>' : ''}</span>
                     <span class="follow-cell-cost">${fmtDollar(g.roles[r].totalCost)}</span>
-                    ${state.mode === 'multiplayer' && ti === 0 ? `<span class="follow-cell-order">${describeSubmittedOrder(getSubmittedOrderFor(r), g.roles[r].history.length ? g.roles[r].history[g.roles[r].history.length - 1].orderPlaced : null)}</span>` : ''}
+                    <span class="follow-cell-order" data-order-team="${ti}" data-order-role="${r}">${facilitatorOrderCellHtml(ti, r, g)}</span>
                   </button></td>`;
                 }).join('')}
               </tr>`).join('')}
@@ -4774,6 +4814,7 @@ function bindPlayEvents() {
 }
 
 function submitDecision(value) {
+  cancelPendingDraft();
   if (state.mode === 'solo') {
     stopTimer(); // manual submit: cancel whatever was left of this week's timer before it can fire late
     const decisions = {};
