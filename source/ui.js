@@ -1211,7 +1211,15 @@ function render() {
   app.innerHTML = renderPlay();
   bindPlayEvents();
   updateTimerDisplay();
+  syncHudHeight();
 }
+// The Facilitator's status bar sticks just under the top bar, whose height
+// changes when it wraps on a narrower window, so it is measured after each draw.
+function syncHudHeight() {
+  const hud = document.querySelector('.hud');
+  if (hud) document.documentElement.style.setProperty('--hud-h', hud.offsetHeight + 'px');
+}
+window.addEventListener('resize', () => syncHudHeight());
 
 // ---------- START ----------
 function renderStart() {
@@ -1776,8 +1784,16 @@ function maybeResolveSessionWeek() {
     });
   });
   if (state.lobby.facilitatorSeat && state.pendingHostDecisions.facilitator === undefined) allIn = false;
-  if (allIn) resolveSessionWeek(false);
+  // Everyone is in: hold the week open for a moment before resolving it, so the
+  // Facilitator can see the last order (usually the Manufacturer's) on screen.
+  // The week timer stops now, so it cannot also fire during the pause.
+  if (allIn && !_resolvePauseTimer) {
+    stopTimer();
+    _resolvePauseTimer = setTimeout(() => { _resolvePauseTimer = null; resolveSessionWeek(false); }, RESOLVE_PAUSE_MS);
+  }
 }
+const RESOLVE_PAUSE_MS = 1000;
+let _resolvePauseTimer = null;
 
 // ---------- AI "PLAYS LIKE A HUMAN" ACTIVITY SIMULATION ----------
 // A bot-controlled seat decides its order instantly and invisibly. That's
@@ -2120,6 +2136,7 @@ function flashMiniClick(label) {
 }
 
 function resolveSessionWeek(forced) {
+  if (_resolvePauseTimer) { clearTimeout(_resolvePauseTimer); _resolvePauseTimer = null; } // never resolve the same week twice
   stopTimer();
   // One shared demand value drives every team this week: the single
   // Facilitator's real submission if they're seated and submitted, or one
@@ -2701,7 +2718,7 @@ function renderPlay() {
     <div class="play-body">
       ${isPureAdmin ? '' : renderRoster(game)}
       <div class="tab-content">
-        ${isMulti && state.multiplayerRole === 'host' ? renderHostAdminPanel() : ''}
+        ${isMulti && state.multiplayerRole === 'host' && !isFacilitator ? renderHostAdminPanel() : ''}
         ${isPureAdmin ? '' : (isFacilitator ? renderFacilitatorPanel(game, view) : renderRolePanel(game, view))}
       </div>
     </div>
@@ -2929,6 +2946,52 @@ function renderFacilitatorNewsPicker() {
   </div>`;
 }
 
+// Player names come from other people's devices, so they are escaped before
+// they go into the page.
+function escHtml(v) {
+  return String(v == null ? '' : v).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+}
+// The Facilitator's status bar: one tile per chain role with its stock, backlog,
+// cost and this week's order (typing, then placed). It stays stuck under the top
+// bar, so the Facilitator can watch the chain while scrolling the controls below.
+function renderFacilitatorStatusStrip() {
+  const g = state.mode === 'solo' ? state.game : (state.teams && state.teams[0]);
+  if (!g) return '';
+  const following = state.facilitatorFollowing;
+  let line = '';
+  if (state.mode === 'multiplayer') {
+    const next = SUBMISSION_ORDER.find(r => !roleHasSubmitted(r));
+    line = next ? `Waiting on: <b>${ROLE_ICON[next]} ${ROLE_LABELS[next]}</b>` : '<b>All orders are in.</b> Next week starts in a moment.';
+  }
+  return `
+  <div class="fac-strip" id="facStatusStrip">
+    <div class="fac-strip-head"><span>Week ${g.week} · Facilitator → Retailer → Wholesaler → Distributor → Manufacturer</span><span class="fac-strip-wait">${line}</span></div>
+    <div class="fac-strip-cells">${CHAIN.map(r => {
+      const a = g.roleAssignments[r], rs = g.roles[r];
+      const isF = !!following && following.teamIndex === 0 && following.role === r;
+      return `<button class="fac-strip-cell followable-row ${isF ? 'following' : ''}" data-follow-team="0" data-follow-role="${r}" title="Click to follow this role">
+        <span class="fac-strip-role">${ROLE_ICON[r]} ${ROLE_LABELS[r]}</span>
+        <span class="fac-strip-name">${isF ? '👁 ' : ''}${escHtml(a.name)}${a.isBot ? ' <span class="badge-tiny">AI</span>' : ''}</span>
+        <span class="fac-strip-nums">Stock <b>${rs.stock}</b> · Backlog <b class="${rs.backlog > 0 ? 'neg' : ''}">${rs.backlog}</b> · <b>${fmtDollar(rs.totalCost)}</b></span>
+        <span class="follow-cell-order" data-order-team="0" data-order-role="${r}">${facilitatorOrderCellHtml(0, r, g)}</span>
+      </button>`;
+    }).join('')}</div>
+  </div>`;
+}
+// Every role's week-by-week table, the same columns a player sees for their own role.
+function renderAllRolesBoard(g) {
+  if (!g) return '';
+  return `<div class="fac-board">${CHAIN.map(r => {
+    const h = g.roles[r].history, a = g.roleAssignments[r];
+    return `<div class="fac-board-role">
+      <h4>${ROLE_ICON[r]} ${ROLE_LABELS[r]} <span class="fac-board-who">${escHtml(a.name)}${a.isBot ? ' (AI)' : ''}</span></h4>
+      <div class="fac-board-scroll"><table class="mini-table fac-board-table">
+        <thead><tr><th>Week</th><th>Stock</th><th>Backlog</th><th>Order In</th><th>Order Placed</th><th>Weekly Cost</th><th>Running Total</th></tr></thead>
+        <tbody>${h.map(x => `<tr><td>${x.week}</td><td>${x.stock}</td><td class="${x.backlog > 0 ? 'neg' : ''}">${x.backlog}</td><td>${x.incomingOrder}</td><td>${x.orderPlaced}</td><td>${fmtDollar(x.weeklyCost)}</td><td>${fmtDollar(x.totalCost)}</td></tr>`).join('') || '<tr><td colspan="7" class="hint">No weeks completed yet.</td></tr>'}</tbody>
+      </table></div>
+    </div>`;
+  }).join('')}</div>`;
+}
 function renderFacilitatorPanel(game, view) {
   const following = state.facilitatorFollowing; // { teamIndex, role } or null
   const decisionTimeLabel = state.mode === 'multiplayer'
@@ -2941,6 +3004,7 @@ function renderFacilitatorPanel(game, view) {
   const startingDemand = FIXED_ORDER_QTY;
 
   return `
+  ${renderFacilitatorStatusStrip()}
   <div class="panel two-col">
     <div class="card">
       <h3>🧑‍🍺 Facilitator: Week ${view.week}</h3>
@@ -2963,28 +3027,10 @@ function renderFacilitatorPanel(game, view) {
            <button class="btn-primary btn-block" style="margin-top:14px;" id="submitDemandBtn" ${state.waitingForOthers?'disabled':''}>${state.waitingForOthers?'Waiting…':'Submit Demand →'}</button>`}
     </div>
     <div class="card">
-      <h3>Current Role status</h3>
-      <p class="hint">Each seat shows that role's order this week: the number they are typing, then what they actually ordered once they submit (news and ceilings included). Click any seat to see that role's situation: their stock, backlog, cost, and week-by-week history.${SHOW_FACILITATOR_LIVE_SCREEN ? ` In multiplayer you'll also see a live view of their screen and what they're typing.` : ''} View only, you can never edit or submit for them.</p>
-      <div class="team-grid-wrap">
-        <table class="team-grid follow-table">
-          <thead><tr>${CHAIN.map(r => `<th>${ROLE_ICON[r]} ${ROLE_LABELS[r]}</th>`).join('')}</tr></thead>
-          <tbody>
-            ${(state.mode === 'solo' ? [state.game] : state.teams).map((g, ti) => `
-              <tr>
-                ${CHAIN.map(r => {
-                  const isFollowing = following && following.teamIndex === ti && following.role === r;
-                  const a = g.roleAssignments[r];
-                  return `<td><button class="seat-cell followable-row ${isFollowing ? 'following' : ''}" data-follow-team="${ti}" data-follow-role="${r}">
-                    <span class="follow-cell-name">${isFollowing ? '👁 ' : ''}${a.name}${a.isBot ? ' <span class="badge-tiny">AI</span>' : ''}</span>
-                    <span class="follow-cell-cost">${fmtDollar(g.roles[r].totalCost)}</span>
-                    <span class="follow-cell-order" data-order-team="${ti}" data-order-role="${r}">${facilitatorOrderCellHtml(ti, r, g)}</span>
-                  </button></td>`;
-                }).join('')}
-              </tr>`).join('')}
-          </tbody>
-        </table>
-      </div>
+      <h3>📋 All roles, week by week</h3>
+      <p class="hint">Every role's numbers after each completed week. Click a role in the bar at the top to follow it more closely. View only: you can never edit or submit for them.</p>
       ${following ? renderFacilitatorFollowDetail((state.mode === 'solo' ? state.game : state.teams[following.teamIndex]), following.teamIndex, following.role) : ''}
+      ${renderAllRolesBoard(state.mode === 'solo' ? state.game : (state.teams ? state.teams[0] : null))}
       ${SHOW_AI_ORDERING_REVIEW ? renderMistakePanel(state.mode === 'solo' ? state.game : (state.teams ? state.teams[0] : null)) : ''}
     </div>
   </div>
